@@ -1,0 +1,26 @@
+# Binance API
+python-binance==1.0.19
+websockets==12.0
+
+# Технічний аналіз
+pandas==2.2.0
+numpy==1.26.4
+ta==0.11.0
+
+# Telegram бот
+python-telegram-bot==21.0.1
+
+# Планувальник задач
+APScheduler==3.10.4
+
+# Новини та HTTP
+aiohttp==3.9.3
+requests==2.31.0
+python-dotenv==1.0.1
+
+# База даних
+aiosqlite==0.20.0
+
+# Логування та утиліти
+loguru==0.7.2
+pytz==2024.1
