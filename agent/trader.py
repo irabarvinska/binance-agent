@@ -62,17 +62,10 @@ class BinanceTrader:
 
     async def initialize(self) -> None:
         """Ініціалізує Binance клієнт."""
-        # Проксі: потрібен коли сервер знаходиться в заблокованому Binance регіоні (напр. USA)
-        # Встановлюється через змінну середовища HTTPS_PROXY
-        proxy = config.binance.https_proxy or None
-        if proxy:
-            logger.info(f"Використовується проксі: {proxy.split('@')[-1]}")  # не логуємо credentials
-
         self._client = await AsyncClient.create(
             api_key=config.binance.api_key,
             api_secret=config.binance.api_secret,
             testnet=config.binance.testnet,
-            https_proxy=proxy or None,
         )
         logger.info(
             f"Binance клієнт ініціалізовано "

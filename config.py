@@ -22,9 +22,6 @@ class BinanceConfig:
     # REST endpoints
     rest_base_url: str = "https://api.binance.com"
     rest_testnet_url: str = "https://testnet.binance.vision"
-    # Проксі (опційно): потрібен якщо деплой на сервері в заблокованому регіоні (напр. США)
-    # Формат: "http://user:pass@host:port" або "socks5://host:port"
-    https_proxy: str = field(default_factory=lambda: os.getenv("HTTPS_PROXY", os.getenv("https_proxy", "")))
 
 
 @dataclass
