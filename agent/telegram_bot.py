@@ -1,6 +1,7 @@
 """
 Telegram бот для звітів та алертів.
 Щоденний звіт о 11:00 (Київ), алерти при мілстоунах та великих угодах.
+Команди: /report — звіт зараз, /status — статус агента, /balance — баланс.
 """
 
 import asyncio
@@ -8,9 +9,10 @@ from datetime import datetime, date
 from typing import Optional, List
 import pytz
 
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
@@ -20,14 +22,15 @@ from config import config
 class TelegramReporter:
     """
     Надсилає звіти та алерти в Telegram.
-    Використовує APScheduler для щоденного звіту.
+    Слухає команди: /report, /status, /balance.
     """
 
     def __init__(self):
         self._bot: Optional[Bot] = None
+        self._application: Optional[Application] = None
         self._chat_id = config.telegram.chat_id
         self._scheduler = AsyncIOScheduler(timezone=config.timezone)
-        self._portfolio_manager = None   # встановлюється ззовні через set_portfolio
+        self._portfolio_manager = None
         self._db_manager = None
         self._analyzer = None
 
@@ -35,17 +38,17 @@ class TelegramReporter:
         """Прив'язує менеджер портфеля для генерації звітів."""
         self._portfolio_manager = portfolio_manager
         self._db_manager = db_manager
-        self._analyzer = analyzer  # потрібен для market summary та sentiment
+        self._analyzer = analyzer
 
     async def initialize(self) -> None:
-        """Ініціалізує бот та планувальник."""
+        """Ініціалізує бот, планувальник та обробник команд."""
         if not config.telegram.bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN не встановлено — Telegram відключено")
             return
 
+        # Bot для надсилання
         self._bot = Bot(token=config.telegram.bot_token)
 
-        # Перевіряємо з'єднання
         try:
             me = await self._bot.get_me()
             logger.info(f"Telegram бот підключено: @{me.username}")
@@ -54,7 +57,22 @@ class TelegramReporter:
             self._bot = None
             return
 
-        # Плануємо щоденний звіт (11:00 Київ = 08:00 UTC)
+        # Application для отримання команд (/report, /status, /balance)
+        self._application = (
+            Application.builder()
+            .token(config.telegram.bot_token)
+            .build()
+        )
+        self._application.add_handler(CommandHandler("report", self._cmd_report))
+        self._application.add_handler(CommandHandler("status", self._cmd_status))
+        self._application.add_handler(CommandHandler("balance", self._cmd_balance))
+
+        await self._application.initialize()
+        await self._application.start()
+        await self._application.updater.start_polling(drop_pending_updates=True)
+        logger.info("Telegram команди активні: /report /status /balance")
+
+        # Щоденний звіт за розкладом (11:00 Київ = 08:00 UTC)
         self._scheduler.add_job(
             self._send_daily_report,
             "cron",
@@ -67,6 +85,67 @@ class TelegramReporter:
             f"Планувальник запущено. Щоденний звіт о "
             f"{config.telegram.daily_report_hour:02d}:{config.telegram.daily_report_minute:02d} UTC"
         )
+
+    # ──────────────────────────────────────────
+    # Обробники команд
+    # ──────────────────────────────────────────
+
+    async def _is_authorized(self, update: Update) -> bool:
+        """Дозволяємо команди тільки з нашого chat_id."""
+        return str(update.effective_chat.id) == str(self._chat_id)
+
+    async def _cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/report — надіслати звіт прямо зараз."""
+        if not await self._is_authorized(update):
+            return
+        await update.message.reply_text("⏳ Генерую звіт...")
+        await self._send_daily_report()
+
+    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/status — статус агента."""
+        if not await self._is_authorized(update):
+            return
+
+        pm = self._portfolio_manager
+        if not pm:
+            await update.message.reply_text("⚠️ Агент ще не готовий")
+            return
+
+        total = pm.calculate_total_usdt()
+        positions = pm.open_positions_count()
+        text = (
+            f"✅ <b>Агент працює</b>\n\n"
+            f"💰 Баланс: <b>${total:,.2f}</b>\n"
+            f"📂 Відкритих позицій: {positions}/{config.trading.max_open_positions}\n"
+            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        )
+        await self.send(text)
+
+    async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/balance — детальний баланс по активах."""
+        if not await self._is_authorized(update):
+            return
+
+        pm = self._portfolio_manager
+        if not pm:
+            await update.message.reply_text("⚠️ Агент ще не готовий")
+            return
+
+        breakdown = pm.get_portfolio_breakdown()
+        lines = ["💼 <b>БАЛАНС ПОРТФЕЛЯ</b>\n"]
+
+        for asset, qty in pm._balances.items():
+            price = pm.get_asset_price_usdt(asset)
+            value = qty * price
+            if value > 0.01:
+                lines.append(f"• {asset}: {qty:.6f} ≈ <b>${value:.2f}</b>")
+
+        lines.append(f"\n<b>Разом: ${breakdown['total_usdt']:,.2f}</b>")
+        await self.send("\n".join(lines))
+
+    # ──────────────────────────────────────────
+    # Надсилання повідомлень
+    # ──────────────────────────────────────────
 
     async def send(self, text: str, parse_mode: str = ParseMode.HTML) -> bool:
         """Надсилає повідомлення в Telegram."""
@@ -95,6 +174,7 @@ class TelegramReporter:
             f"Стратегія: 50% HODl / 25% Помірний / 25% Високий ризик\n"
             f"Мілстоун 1: <b>${config.portfolio.milestone_1:,.0f}</b>\n"
             f"Мілстоун 2: <b>${config.portfolio.milestone_2:,.0f}</b>\n\n"
+            f"Команди: /report /status /balance\n"
             f"Час запуску: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         await self.send(text)
@@ -107,7 +187,7 @@ class TelegramReporter:
             f"🏆 Ціль: <b>${milestone:,.0f}</b>\n"
             f"💰 Поточний баланс: <b>${balance:,.2f}</b>\n"
             f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"{'🔥 Чудова робота! Йдемо до наступного мілстоуну!' if milestone < config.portfolio.milestone_2 else '🚀 Всі мілстоуни досягнуто! Продовжуємо зростати!'}"
+            f"{'🔥 Йдемо до наступного мілстоуну!' if milestone < config.portfolio.milestone_2 else '🚀 Всі мілстоуни досягнуто!'}"
         )
         await self.send(text)
 
@@ -189,6 +269,10 @@ class TelegramReporter:
         )
         await self.send(text)
 
+    # ──────────────────────────────────────────
+    # Щоденний звіт
+    # ──────────────────────────────────────────
+
     async def _send_daily_report(self) -> None:
         """Генерує та надсилає щоденний звіт."""
         if not self._portfolio_manager or not self._db_manager:
@@ -208,20 +292,17 @@ class TelegramReporter:
         breakdown = pm.get_portfolio_breakdown()
         total = breakdown["total_usdt"]
 
-        # Дані за день
         today_trades = await self._db_manager.get_today_trades()
         profitable = sum(1 for t in today_trades if (t.get("pnl_usdt") or 0) > 0)
         loss_count = sum(1 for t in today_trades if (t.get("pnl_usdt") or 0) < 0)
         pnl_today = sum(t.get("pnl_usdt") or 0 for t in today_trades)
 
-        # Прогрес до Мілстоуну 1
         progress_m1 = min(100.0, total / config.portfolio.milestone_1 * 100)
         progress_m2 = min(100.0, total / config.portfolio.milestone_2 * 100)
 
-        # Топ позиції
         top_positions = pm.get_top_positions(3)
-        positions_text = ""
         if top_positions:
+            positions_text = ""
             for pos in top_positions:
                 sign = "+" if pos["pnl_pct"] >= 0 else ""
                 positions_text += (
@@ -231,10 +312,7 @@ class TelegramReporter:
         else:
             positions_text = "  Відкритих позицій немає\n"
 
-        # Sentiment з аналізатора (якщо доступний)
-        sentiment_score = 0.0
-        if self._analyzer:
-            sentiment_score = self._analyzer._news.last_score
+        sentiment_score = self._analyzer._news.last_score if self._analyzer else 0.0
         if sentiment_score > 0.2:
             sentiment_text = "🟢 Позитивний"
         elif sentiment_score < -0.2:
@@ -245,7 +323,7 @@ class TelegramReporter:
         pnl_sign = "+" if pnl_today >= 0 else ""
         date_str = datetime.now().strftime("%d.%m.%Y")
 
-        report = (
+        return (
             f"📊 <b>DAILY REPORT — {date_str}</b>\n\n"
             f"💰 Баланс: <b>${total:,.2f}</b> ({pnl_sign}${pnl_today:.2f} сьогодні)\n"
             f"📈 Прогрес:\n"
@@ -264,10 +342,12 @@ class TelegramReporter:
             f"<b>РИНКОВИЙ СЕНТИМЕНТ:</b> {sentiment_text}\n"
         )
 
-        return report
-
     async def shutdown(self) -> None:
-        """Зупиняє планувальник."""
+        """Зупиняє планувальник та Application."""
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
-        logger.info("Telegram планувальник зупинено")
+        if self._application:
+            await self._application.updater.stop()
+            await self._application.stop()
+            await self._application.shutdown()
+        logger.info("Telegram зупинено")
