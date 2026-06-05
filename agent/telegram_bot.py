@@ -29,11 +29,13 @@ class TelegramReporter:
         self._scheduler = AsyncIOScheduler(timezone=config.timezone)
         self._portfolio_manager = None   # встановлюється ззовні через set_portfolio
         self._db_manager = None
+        self._analyzer = None
 
-    def set_portfolio(self, portfolio_manager, db_manager) -> None:
+    def set_portfolio(self, portfolio_manager, db_manager, analyzer=None) -> None:
         """Прив'язує менеджер портфеля для генерації звітів."""
         self._portfolio_manager = portfolio_manager
         self._db_manager = db_manager
+        self._analyzer = analyzer  # потрібен для market summary та sentiment
 
     async def initialize(self) -> None:
         """Ініціалізує бот та планувальник."""
@@ -229,11 +231,10 @@ class TelegramReporter:
         else:
             positions_text = "  Відкритих позицій немає\n"
 
-        # Отримуємо market summary
-        market_data = pm._latest_tickers if hasattr(pm, "_latest_tickers") else {}
-
-        # Sentiment з останнього аналізу
-        sentiment_score = getattr(pm, "_last_sentiment", 0.0)
+        # Sentiment з аналізатора (якщо доступний)
+        sentiment_score = 0.0
+        if self._analyzer:
+            sentiment_score = self._analyzer._news.last_score
         if sentiment_score > 0.2:
             sentiment_text = "🟢 Позитивний"
         elif sentiment_score < -0.2:

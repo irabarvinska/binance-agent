@@ -82,12 +82,13 @@ class TradingAgent:
             return False
 
         # Ініціалізуємо компоненти
+        # Telegram першим — щоб алерти про помилки теж надходили
         await self._portfolio.initialize()
-        await self._trader.initialize()
         await self._telegram.initialize()
+        await self._trader.initialize()
 
         # Прив'язуємо портфель до Telegram для звітів
-        self._telegram.set_portfolio(self._portfolio, self._db)
+        self._telegram.set_portfolio(self._portfolio, self._db, self._analyzer)
 
         # Реєструємо WebSocket обробники
         self._ws.on("kline", self._on_kline)

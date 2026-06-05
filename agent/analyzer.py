@@ -164,6 +164,7 @@ class NewsAnalyzer:
         self._api_key = config.news.api_key
         self._cache: Dict[str, Tuple[float, float]] = {}  # {query: (timestamp, score)}
         self._cache_ttl = config.news.update_interval_minutes * 60
+        self.last_score: float = 0.0  # останній розрахований sentiment
 
     async def get_sentiment(self, query: str = "bitcoin ethereum crypto") -> float:
         """
@@ -185,6 +186,7 @@ class NewsAnalyzer:
         try:
             score = await self._fetch_sentiment(query)
             self._cache[query] = (now, score)
+            self.last_score = score
             return score
         except Exception as e:
             logger.error(f"Помилка аналізу новин: {e}")
