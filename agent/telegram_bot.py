@@ -9,7 +9,7 @@ from datetime import datetime, date
 from typing import Optional, List
 import pytz
 
-from telegram import Bot, Update
+from telegram import Update
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -23,10 +23,10 @@ class TelegramReporter:
     """
     Надсилає звіти та алерти в Telegram.
     Слухає команди: /report, /status, /balance.
+    Один Application для надсилання і отримання (уникаємо конфлікту Bot + Application).
     """
 
     def __init__(self):
-        self._bot: Optional[Bot] = None
         self._application: Optional[Application] = None
         self._chat_id = config.telegram.chat_id
         self._scheduler = AsyncIOScheduler(timezone=config.timezone)
@@ -46,18 +46,8 @@ class TelegramReporter:
             logger.warning("TELEGRAM_BOT_TOKEN не встановлено — Telegram відключено")
             return
 
-        # Bot для надсилання
-        self._bot = Bot(token=config.telegram.bot_token)
-
-        try:
-            me = await self._bot.get_me()
-            logger.info(f"Telegram бот підключено: @{me.username}")
-        except TelegramError as e:
-            logger.error(f"Помилка підключення Telegram: {e}")
-            self._bot = None
-            return
-
-        # Application для отримання команд (/report, /status, /balance)
+        # Один Application — і для надсилання, і для отримання команд.
+        # Окремий Bot() з тим самим токеном конфліктує з polling.
         self._application = (
             Application.builder()
             .token(config.telegram.bot_token)
@@ -68,6 +58,15 @@ class TelegramReporter:
         self._application.add_handler(CommandHandler("balance", self._cmd_balance))
 
         await self._application.initialize()
+
+        try:
+            me = await self._application.bot.get_me()
+            logger.info(f"Telegram бот підключено: @{me.username}")
+        except TelegramError as e:
+            logger.error(f"Помилка підключення Telegram: {e}")
+            self._application = None
+            return
+
         await self._application.start()
         await self._application.updater.start_polling(drop_pending_updates=True)
         logger.info("Telegram команди активні: /report /status /balance")
@@ -149,12 +148,12 @@ class TelegramReporter:
 
     async def send(self, text: str, parse_mode: str = ParseMode.HTML) -> bool:
         """Надсилає повідомлення в Telegram."""
-        if not self._bot:
+        if not self._application:
             logger.debug(f"[Telegram відключено] {text[:100]}")
             return False
 
         try:
-            await self._bot.send_message(
+            await self._application.bot.send_message(
                 chat_id=self._chat_id,
                 text=text,
                 parse_mode=parse_mode,
@@ -347,7 +346,10 @@ class TelegramReporter:
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
         if self._application:
-            await self._application.updater.stop()
-            await self._application.stop()
-            await self._application.shutdown()
+            try:
+                await self._application.updater.stop()
+                await self._application.stop()
+                await self._application.shutdown()
+            except Exception as e:
+                logger.debug(f"Telegram shutdown: {e}")
         logger.info("Telegram зупинено")
