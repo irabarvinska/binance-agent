@@ -69,36 +69,11 @@ class TradingAgent:
         self._ws = BinanceWebSocketClient()
         self._running = False
 
-    async def initialize(self) -> bool:
-        """Ініціалізує всі компоненти."""
+    async def _log_startup_banner(self) -> None:
         logger.info("=" * 50)
         logger.info("Binance Trading Agent v1.0")
         logger.info(f"Режим: {'TESTNET' if config.binance.testnet else 'MAINNET'}")
         logger.info("=" * 50)
-
-        # Перевіряємо конфігурацію
-        if not config.validate():
-            logger.error("Помилка конфігурації! Перевірте .env файл")
-            return False
-
-        # Ініціалізуємо компоненти
-        # Telegram першим — щоб алерти про помилки теж надходили
-        await self._portfolio.initialize()
-        await self._telegram.initialize()
-        await self._trader.initialize()
-
-        # Прив'язуємо портфель до Telegram для звітів
-        self._telegram.set_portfolio(self._portfolio, self._db, self._analyzer)
-
-        # Реєструємо WebSocket обробники
-        self._ws.on("kline", self._on_kline)
-        self._ws.on("ticker", self._on_ticker)
-        self._ws.on("connected", self._on_ws_connected)
-        self._ws.on("disconnected", self._on_ws_disconnected)
-        self._ws.on("error", self._on_ws_error)
-
-        logger.info("Всі компоненти ініціалізовано")
-        return True
 
     async def _on_kline(self, data: dict) -> None:
         """Обробник нової свічки від WebSocket."""
@@ -142,14 +117,26 @@ class TradingAgent:
 
     async def run(self) -> None:
         """Запускає агента."""
-        if not await self._initialize_with_retry():
+        await self._log_startup_banner()
+
+        if not config.validate():
+            logger.error("Помилка конфігурації! Перевірте .env файл")
+            return
+
+        # Telegram ініціалізуємо першим — щоб міг слати повідомлення навіть про помилки Binance
+        await self._portfolio.initialize()
+        await self._telegram.initialize()
+
+        ok = await self._initialize_binance_with_retry()
+        if not ok:
+            await self._telegram.send(
+                "❌ <b>Агент не зміг запуститись</b>\n"
+                "Binance API недоступний після 3 спроб. Перевір логи Railway."
+            )
             return
 
         self._running = True
-
-        # Надсилаємо повідомлення про запуск
         await self._telegram.send_startup_message()
-
         logger.info("Агент запущено! Очікуємо WebSocket дані...")
 
         # Запускаємо завдання паралельно
@@ -165,13 +152,25 @@ class TradingAgent:
         finally:
             await self.shutdown()
 
-    async def _initialize_with_retry(self, max_attempts: int = 3) -> bool:
-        """Ініціалізація з повторними спробами."""
+    async def _initialize_binance_with_retry(self, max_attempts: int = 3) -> bool:
+        """Ініціалізує Binance + WebSocket обробники з повторними спробами."""
         for attempt in range(1, max_attempts + 1):
             try:
-                return await self.initialize()
+                await self._trader.initialize()
+
+                # Реєструємо WebSocket обробники
+                self._ws.on("kline", self._on_kline)
+                self._ws.on("ticker", self._on_ticker)
+                self._ws.on("connected", self._on_ws_connected)
+                self._ws.on("disconnected", self._on_ws_disconnected)
+                self._ws.on("error", self._on_ws_error)
+
+                # Прив'язуємо портфель до Telegram
+                self._telegram.set_portfolio(self._portfolio, self._db, self._analyzer)
+                logger.info("Ініціалізація успішна")
+                return True
             except Exception as e:
-                logger.error(f"Помилка ініціалізації (спроба {attempt}/{max_attempts}): {e}")
+                logger.error(f"Помилка ініціалізації Binance (спроба {attempt}/{max_attempts}): {e}")
                 if attempt < max_attempts:
                     await asyncio.sleep(5 * attempt)
         return False

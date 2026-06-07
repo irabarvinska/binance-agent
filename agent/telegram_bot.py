@@ -91,10 +91,15 @@ class TelegramReporter:
 
     async def _is_authorized(self, update: Update) -> bool:
         """Дозволяємо команди тільки з нашого chat_id."""
-        return str(update.effective_chat.id) == str(self._chat_id)
+        incoming = str(update.effective_chat.id)
+        authorized = incoming == str(self._chat_id)
+        if not authorized:
+            logger.warning(f"Команда від невідомого chat_id={incoming} (очікувався {self._chat_id})")
+        return authorized
 
     async def _cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/report — надіслати звіт прямо зараз."""
+        logger.info(f"/report від chat_id={update.effective_chat.id}")
         if not await self._is_authorized(update):
             return
         await update.message.reply_text("⏳ Генерую звіт...")
@@ -102,6 +107,7 @@ class TelegramReporter:
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/status — статус агента."""
+        logger.info(f"/status від chat_id={update.effective_chat.id}")
         if not await self._is_authorized(update):
             return
 
@@ -122,6 +128,7 @@ class TelegramReporter:
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/balance — детальний баланс по активах."""
+        logger.info(f"/balance від chat_id={update.effective_chat.id}")
         if not await self._is_authorized(update):
             return
 

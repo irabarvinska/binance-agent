@@ -74,6 +74,58 @@ class BinanceTrader:
 
         # Синхронізуємо реальні баланси
         await self._sync_balances()
+        # Завантажуємо історичні свічки — без цього аналіз не починається годинами
+        await self._load_historical_data()
+
+    async def _load_historical_data(self) -> None:
+        """
+        Завантажує 250 історичних свічок через REST API для кожного символу.
+        Критично: без цього EMA200 потребує 200 годин накопичення через WebSocket,
+        а агент ніколи не почне аналізувати після кожного редеплою.
+        """
+        from binance.enums import (
+            KLINE_INTERVAL_1MINUTE,
+            KLINE_INTERVAL_1HOUR,
+            KLINE_INTERVAL_4HOUR,
+        )
+        interval_map = {
+            "1m": KLINE_INTERVAL_1MINUTE,
+            "1h": KLINE_INTERVAL_1HOUR,
+            "4h": KLINE_INTERVAL_4HOUR,
+        }
+
+        total = 0
+        for symbol in config.trading.watch_symbols:
+            for interval in config.trading.kline_intervals:
+                try:
+                    await self._rate_limiter.wait()
+                    klines = await self._client.get_klines(
+                        symbol=symbol,
+                        interval=interval_map.get(interval, interval),
+                        limit=250,
+                    )
+                    for k in klines:
+                        candle = {
+                            "symbol": symbol,
+                            "interval": interval,
+                            "open_time": k[0],
+                            "close_time": k[6],
+                            "open": float(k[1]),
+                            "high": float(k[2]),
+                            "low": float(k[3]),
+                            "close": float(k[4]),
+                            "volume": float(k[5]),
+                            "is_closed": True,
+                            "quote_volume": float(k[7]),
+                            "trades": int(k[8]),
+                        }
+                        self._analyzer.update_candle(symbol, interval, candle)
+                    total += len(klines)
+                    logger.debug(f"Завантажено {len(klines)} свічок {symbol}/{interval}")
+                except Exception as e:
+                    logger.error(f"Помилка завантаження {symbol}/{interval}: {e}")
+
+        logger.info(f"Історичні дані завантажено: {total} свічок для {len(config.trading.watch_symbols)} символів")
 
     async def _sync_balances(self) -> None:
         """Синхронізує баланси з Binance акаунту."""
