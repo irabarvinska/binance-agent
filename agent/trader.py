@@ -142,7 +142,15 @@ class BinanceTrader:
                     logger.debug(f"Баланс {asset}: {total}")
             logger.info("Баланси синхронізовано з Binance")
         except BinanceAPIException as e:
-            logger.error(f"Помилка синхронізації балансів: {e}")
+            if e.code == -2015:
+                logger.error(
+                    "Binance відхиляє підписані запити (-2015). Перевірте на "
+                    "binance.com → API Management: 1) увімкнено 'Enable Reading' та "
+                    "'Enable Spot & Margin Trading'; 2) IP-обмеження вимкнено "
+                    "(Unrestricted) — IP Railway динамічні. Без цього торгівля неможлива!"
+                )
+            else:
+                logger.error(f"Помилка синхронізації балансів: {e}")
 
     async def _get_available_usdt(self) -> float:
         """
