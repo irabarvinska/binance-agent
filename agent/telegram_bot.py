@@ -53,9 +53,11 @@ class TelegramReporter:
             .token(config.telegram.bot_token)
             .build()
         )
+        self._application.add_handler(CommandHandler("start", self._cmd_start))
         self._application.add_handler(CommandHandler("report", self._cmd_report))
         self._application.add_handler(CommandHandler("status", self._cmd_status))
         self._application.add_handler(CommandHandler("balance", self._cmd_balance))
+        self._application.add_error_handler(self._on_handler_error)
 
         await self._application.initialize()
 
@@ -82,28 +84,61 @@ class TelegramReporter:
         self._scheduler.start()
         logger.info(
             f"Планувальник запущено. Щоденний звіт о "
-            f"{config.telegram.daily_report_hour:02d}:{config.telegram.daily_report_minute:02d} UTC"
+            f"{config.telegram.daily_report_hour:02d}:{config.telegram.daily_report_minute:02d} ({config.timezone})"
         )
 
     # ──────────────────────────────────────────
     # Обробники команд
     # ──────────────────────────────────────────
 
+    async def _on_handler_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Логуємо помилки в обробниках команд — інакше вони губляться."""
+        logger.error(f"Помилка в Telegram обробнику: {context.error}")
+
     async def _is_authorized(self, update: Update) -> bool:
         """Дозволяємо команди тільки з нашого chat_id."""
         incoming = str(update.effective_chat.id)
-        authorized = incoming == str(self._chat_id)
+        authorized = incoming == str(self._chat_id).strip()
         if not authorized:
             logger.warning(f"Команда від невідомого chat_id={incoming} (очікувався {self._chat_id})")
+            # Відповідаємо щоб користувач побачив розбіжність і виправив TELEGRAM_CHAT_ID
+            await update.message.reply_text(
+                f"⛔ Цей чат не авторизований.\n"
+                f"Ваш chat_id: {incoming}\n"
+                f"Встановіть TELEGRAM_CHAT_ID={incoming} в Railway Variables."
+            )
         return authorized
+
+    async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/start — діагностика: показує chat_id і чи збігається з конфігурацією."""
+        incoming = str(update.effective_chat.id)
+        match = "✅ збігається з TELEGRAM_CHAT_ID" if incoming == str(self._chat_id).strip() \
+            else f"❌ НЕ збігається з TELEGRAM_CHAT_ID ({self._chat_id})"
+        await update.message.reply_text(
+            f"🤖 Binance Trading Agent\n\n"
+            f"Ваш chat_id: {incoming}\n"
+            f"{match}\n\n"
+            f"Команди: /report /status /balance"
+        )
 
     async def _cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/report — надіслати звіт прямо зараз."""
         logger.info(f"/report від chat_id={update.effective_chat.id}")
         if not await self._is_authorized(update):
             return
-        await update.message.reply_text("⏳ Генерую звіт...")
-        await self._send_daily_report()
+
+        if not self._portfolio_manager or not self._db_manager:
+            await update.message.reply_text("⚠️ Портфель ще не ініціалізовано (Binance підключається)")
+            return
+
+        try:
+            report = await self._build_daily_report()
+            # Відповідаємо в той самий чат звідки прийшла команда
+            await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+            logger.info("Звіт надіслано за командою /report")
+        except Exception as e:
+            logger.exception("Помилка генерації звіту за /report")
+            await update.message.reply_text(f"❌ Помилка генерації звіту: {e}")
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/status — статус агента."""
@@ -113,7 +148,7 @@ class TelegramReporter:
 
         pm = self._portfolio_manager
         if not pm:
-            await update.message.reply_text("⚠️ Агент ще не готовий")
+            await update.message.reply_text("⚠️ Агент ще не готовий (Binance підключається)")
             return
 
         total = pm.calculate_total_usdt()
@@ -124,7 +159,7 @@ class TelegramReporter:
             f"📂 Відкритих позицій: {positions}/{config.trading.max_open_positions}\n"
             f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
         )
-        await self.send(text)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/balance — детальний баланс по активах."""
@@ -134,7 +169,7 @@ class TelegramReporter:
 
         pm = self._portfolio_manager
         if not pm:
-            await update.message.reply_text("⚠️ Агент ще не готовий")
+            await update.message.reply_text("⚠️ Агент ще не готовий (Binance підключається)")
             return
 
         breakdown = pm.get_portfolio_breakdown()
@@ -147,7 +182,7 @@ class TelegramReporter:
                 lines.append(f"• {asset}: {qty:.6f} ≈ <b>${value:.2f}</b>")
 
         lines.append(f"\n<b>Разом: ${breakdown['total_usdt']:,.2f}</b>")
-        await self.send("\n".join(lines))
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
     # ──────────────────────────────────────────
     # Надсилання повідомлень

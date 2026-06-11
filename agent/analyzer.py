@@ -329,8 +329,9 @@ class MarketAnalyzer:
             "candles_count": len(df),
         }
 
+        rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
         logger.debug(
-            f"{symbol} {interval}: RSI={rsi:.1f if rsi else 'N/A'}, "
+            f"{symbol} {interval}: RSI={rsi_str}, "
             f"trend={trend}, signal={combined_signal:.3f}"
         )
         return result

@@ -126,6 +126,9 @@ class TradingAgent:
         # Telegram ініціалізуємо першим — щоб міг слати повідомлення навіть про помилки Binance
         await self._portfolio.initialize()
         await self._telegram.initialize()
+        # Прив'язуємо портфель одразу — команди /status /balance /report працюють
+        # навіть поки Binance ще підключається
+        self._telegram.set_portfolio(self._portfolio, self._db, self._analyzer)
 
         ok = await self._initialize_binance_with_retry()
         if not ok:
@@ -165,8 +168,6 @@ class TradingAgent:
                 self._ws.on("disconnected", self._on_ws_disconnected)
                 self._ws.on("error", self._on_ws_error)
 
-                # Прив'язуємо портфель до Telegram
-                self._telegram.set_portfolio(self._portfolio, self._db, self._analyzer)
                 logger.info("Ініціалізація успішна")
                 return True
             except Exception as e:

@@ -145,10 +145,12 @@ class BinanceTrader:
             logger.error(f"Помилка синхронізації балансів: {e}")
 
     async def _get_available_usdt(self) -> float:
-        """Повертає доступний USDT для торгівлі."""
-        usdt = self._portfolio._balances.get("USDT", 0.0)
-        usdc = self._portfolio._balances.get("USDC", 0.0)
-        return usdt + usdc
+        """
+        Повертає доступний USDT для торгівлі.
+        Тільки USDT: ринковий ордер з quoteOrderQty списує саме USDT,
+        USDC рахувати не можна — ордер впаде з insufficient balance.
+        """
+        return self._portfolio._balances.get("USDT", 0.0)
 
     async def process_candle(self, candle_data: dict) -> None:
         """
@@ -197,7 +199,11 @@ class BinanceTrader:
         # Генеруємо торговий сигнал
         available_usdt = await self._get_available_usdt()
         if available_usdt < config.trading.min_trade_amount:
-            logger.debug(f"Недостатньо USDT: ${available_usdt:.2f}")
+            logger.warning(
+                f"Недостатньо USDT для торгівлі: ${available_usdt:.2f} "
+                f"(мінімум ${config.trading.min_trade_amount:.2f}). "
+                f"Поповніть USDT або конвертуйте USDC→USDT на Binance."
+            )
             return
 
         has_position = self._portfolio.get_position(symbol) is not None
@@ -265,9 +271,14 @@ class BinanceTrader:
                     symbol=symbol,
                     quoteOrderQty=amount_usdt,
                 )
-                price = float(order["fills"][0]["price"]) if order.get("fills") else 0.0
-                quantity = float(order["executedQty"])
+                quantity = float(order.get("executedQty", 0))
+                quote_spent = float(order.get("cummulativeQuoteQty", 0))
+                # Середня ціна виконання по всіх fills, а не тільки перший
+                price = quote_spent / quantity if quantity > 0 else 0.0
                 order_id = str(order["orderId"])
+                if quantity <= 0 or price <= 0:
+                    logger.error(f"BUY {symbol}: ордер не виконано (executedQty={quantity})")
+                    return
                 logger.info(f"BUY виконано: {symbol} qty={quantity:.6f} @ ${price:.4f}")
 
             # Зберігаємо позицію
@@ -332,7 +343,10 @@ class BinanceTrader:
                     symbol=symbol,
                     quantity=round(position.quantity, 6),
                 )
-                current_price = float(order["fills"][0]["price"]) if order.get("fills") else current_price
+                sold_qty = float(order.get("executedQty", 0))
+                quote_received = float(order.get("cummulativeQuoteQty", 0))
+                if sold_qty > 0 and quote_received > 0:
+                    current_price = quote_received / sold_qty
                 logger.info(f"SELL виконано: {symbol} @ ${current_price:.4f}")
 
             # Розраховуємо PnL

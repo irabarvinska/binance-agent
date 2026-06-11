@@ -28,8 +28,8 @@ class BinanceConfig:
 class TelegramConfig:
     bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
-    # Час щоденного звіту (UTC)
-    daily_report_hour: int = 8   # 11:00 Київ = 08:00 UTC
+    # Час щоденного звіту за таймзоною планувальника (TIMEZONE, за замовчуванням Europe/Kyiv)
+    daily_report_hour: int = 11   # 11:00 за Києвом
     daily_report_minute: int = 0
 
 
